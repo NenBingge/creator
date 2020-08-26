@@ -1,4 +1,7 @@
-import viewItem from "ViewItemPro";
+// import viewItem from "ViewItemPro";
+var viewItem = require("ViewItemPro");
+var LayoutItemPro = require("LayoutItemPro");
+// var layoutPro = require("layoutPro");
 
 const EPSILON = 1e-4;
 
@@ -9,6 +12,8 @@ cc.Class({
         item_prefab: cc.Prefab,
         item_num: 0,
         item_height: 0,
+        cache_prefabs: [cc.Prefab],
+        auto_add_layout: false,
         // item_prefabs: {
         //     type: cc.Prefab,
         //     default: [],
@@ -26,6 +31,13 @@ cc.Class({
         this.item_list = [];
         this.index_arr = [];
         this.is_init = false;
+        this.layouts = [];
+        this.cache_pools = [];
+        if(this.cache_prefabs.length){
+            for(let i = 0 ; i < this.cache_prefabs.length ; i++){
+                this.cache_pools.push([]);
+            }
+        }
     },
 
     // start(){
@@ -38,6 +50,9 @@ cc.Class({
             if(index == this.item_list.length){
                 var node = cc.instantiate(this.item_prefab);
                 node.itemComponent = node.getComponent(viewItem);
+                if(this.auto_add_layout){
+                    node.itemComponent.setScroll(this);
+                }
                 node.index = index;
                 var self = this;
                 node.on(cc.Node.EventType.SIZE_CHANGED, _ => {
@@ -71,9 +86,24 @@ cc.Class({
         }
     },
 
-    initData(data){
+    toTop(){
+        this.is_init = true;
+        this.stopAutoScroll();
+        this.content.y = this._topBoundary;
+        this.begin_index = 0;
+        if(this.data){
+            var begin_y = 0;
+            var num = Math.min(this.data.length , this.item_num);
+            this.end_index = this.begin_index + num - 1;
+            this.initItems(begin_y , num);    
+        }
+        this.is_init = false;
+    },
+
+    initData(data , p1){
         this.is_init = true;
         this.data = data;
+        this.p1 = p1;
         var begin_y = 0;
         var num = Math.min(data.length , this.item_num);
         this.end_index = this.begin_index + num - 1;
@@ -89,6 +119,12 @@ cc.Class({
                 begin_y = this.item_list[this.index_arr[0]].y;
             }
         }
+        this.initItems(begin_y , num);
+        // this._calculateBoundary();
+        this.is_init = false;
+    },
+
+    initItems(begin_y , num){
         this.index_arr = [];
         var i = 0;
         for(; i < num ; i++){
@@ -96,16 +132,16 @@ cc.Class({
             var index = this.begin_index + i;
             node.active = true;
             node.y = begin_y;
-            node.itemComponent.init(data[index] , index);
+            node.itemComponent.init(this.data[index] , index , this.p1);
+            if(this.auto_add_layout){
+                node.itemComponent.refreshLayout();
+            }
             begin_y -= node.height;
             this.index_arr.push(i);
         }
         for(; i < this.item_list.length ; i++){
             this.item_list[i].active = false;
         }
-        // this._calculateBoundary();
-     
-        this.is_init = false;
     },
 
     getChildByIndex(index){
@@ -115,58 +151,6 @@ cc.Class({
         }
         return null;
     },
-
-
-    // initData(data){
-    //     this.data = data;
-    //     var first_node = cc.instantiate(this.item_prefab);
-    //     first_node.parent = this.content;
-    //     first_node.getComponent(viewItem).init(data[0] , 0);
-    //     var begin_y = 0;
-    //     first_node.y = begin_y;
-    //     begin_y -= first_node.height;
-    //     var num = Math.ceil(this._view.height / first_node.height);
-    //     if(this.item_num == 0){
-    //         this.item_num = num + 2;
-    //     }
-    //     cc.log("item_Num:",this.item_num);
-    //     this.item_list.push(first_node);
-    //     this.index_arr.push(this.end_index);
-    //     var data_len = data.length;
-    //     for(let i = 0 ; i < this.item_num - 1 ; i++){
-    //         var node = cc.instantiate(this.item_prefab);
-    //         node.parent = this.content;
-    //         if(i + 1 < data_len){
-    //             node.getComponent(viewItem).init(data[i + 1] , i + 1);
-    //             node.y = begin_y;
-    //             begin_y -= node.height;
-    //             this.item_list.push(node);
-    //             this.end_index++;
-    //             this.index_arr.push(this.end_index);
-    //         }else{
-    //             node.active = false;
-    //         }
-    //     }
-    //     this._calculateBoundary();
-    // },
-
-    // refreshData(data){
-    //     if(data.length > this.data.length && this.data.length + 2 < this.item_num){
-    //         var num = data.length - this.data.length;
-    //         num = Math.min(num , this.item_num - this.data.length);
-    //         for(let i = 0 ; i < num ; i++){
-    //             var index = this.index_arr.pop();
-    //             this.item_list[index].active = false;
-    //         }
-    //     }else if(data.length < this.data.length && data.length + 2 < this.item_num){
-    //         this.index_arr = [];
-    //         for(let i = 0 ; i < data.length ; i++){
-    //             var index = this.index_arr.pop();
-    //             this.item_list[index].active = false;
-    //         }
-    //     }
-    //     this.data = data;
-    // },
 
     _scrollChildren (deltaMove) {
         deltaMove = this._clampDelta(deltaMove);
@@ -238,7 +222,7 @@ cc.Class({
         this.setContentPosition(newPosition);
    
         this._checkNeedRefresh(adjustedMove);
-        
+        this.updateLayouts(adjustedMove);
         let outOfBoundary = this._getHowMuchOutOfBoundary();
         this._updateScrollBar(outOfBoundary);
         if (this.elastic && canStartBounceBack) {
@@ -269,8 +253,11 @@ cc.Class({
             var node_first = this.item_list[first_index];
             var node_end = this.item_list[end_index];
             // cc.log("tobottom:",this.data[this.end_index])
-            node_first.itemComponent.init(this.data[this.end_index] , this.end_index);
+            node_first.itemComponent.init(this.data[this.end_index] , this.end_index , this.p1);
             node_first.y = node_end.y - node_end.height;
+            if(this.auto_add_layout){
+                node_first.itemComponent.refreshLayout();
+            }
         }
         if(offset.y < 0 && this.begin_index > 0 && this.content.y + this.item_list[this.index_arr[len - 2]].y < this._bottomBoundary){
             this.begin_index--;
@@ -280,16 +267,27 @@ cc.Class({
             var node_end = this.item_list[end_index];
             var node_first = this.item_list[first_index];
             // cc.log("totop:",this.data[this.begin_index])
-            node_end.itemComponent.init(this.data[this.begin_index] , this.begin_index);
+            node_end.itemComponent.init(this.data[this.begin_index] , this.begin_index , this.p1);
             let layout = node_end.getComponent(cc.Layout)
             if (layout) {
                 layout.updateLayout();
             }
             node_end.y = node_first.y + node_end.height;
+            if(this.auto_add_layout){
+                node_end.itemComponent.refreshLayout();
+            }
             this.index_arr.unshift(end_index);
         }
     },
 
+    updateLayouts(offset){
+        if(!this.layouts)return;
+        for(let i = 0 ; i < this.layouts.length ; i++){
+            if(this.layouts[i].node.active){
+                this.layouts[i].refreshItem(offset);
+            }
+        }
+    },
 
 
     _getContentTopBoundary () {
@@ -313,6 +311,40 @@ cc.Class({
         }else{
             let contentPos = this.getContentPosition();
             return contentPos.y - this.content.getAnchorPoint().y * this.content.getContentSize().height;
+        }
+    },
+
+    addLayout(layout){
+        this.layouts.push(layout);
+    },
+
+    removeLayout(layout){
+        var index = this.layouts.indexOf(layout);
+        if(index > -1){
+            this.layouts.splice(index , 1);
+        }
+    },
+
+    getCacheByType(type){
+        if(type < this.cache_prefabs.length){
+            var pool = this.cache_pools[type];
+            if(pool.length <= 0){
+                var node = cc.instantiate(this.cache_prefabs[type]);
+                node.itemComponent = node.getComponent(LayoutItemPro);
+                return node;
+            }
+            var node = pool.pop();
+            node.active = true;
+            return node;
+        }
+        return null;
+    },
+
+    pushCacheByType(type, node){
+        node.parent = null;
+        node.active = false;
+        if(type < this.cache_pools.length){
+            this.cache_pools[type].push(node);
         }
     },
     // LIFE-CYCLE CALLBACKS:
