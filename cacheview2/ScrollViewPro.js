@@ -1,9 +1,14 @@
 // import viewItem from "ViewItemPro";
 var viewItem = require("ViewItemPro");
 var LayoutItemPro = require("LayoutItemPro");
+
 // var layoutPro = require("layoutPro");
 
 const EPSILON = 1e-4;
+
+var DO_NO = 1;
+var PRE_CLEAR_OUT_BOUNDARY_FLAG = 1 << 1;
+var CLEAR_OUT_BOUNDARY_FLAG = 1 << 2;
 
 cc.Class({
     extends: cc.ScrollView,
@@ -14,6 +19,8 @@ cc.Class({
         item_height: 0,
         cache_prefabs: [cc.Prefab],
         auto_add_layout: false,
+        node_bottom: cc.Node,
+        is_inner: false,
         // item_prefabs: {
         //     type: cc.Prefab,
         //     default: [],
@@ -26,6 +33,7 @@ cc.Class({
 
 
     onLoad(){
+        this.state_flag = DO_NO;
         this.begin_index = 0;
         this.end_index = 0;
         this.item_list = [];
@@ -38,6 +46,13 @@ cc.Class({
                 this.cache_pools.push([]);
             }
         }
+        if(this.node_bottom){
+        	this.node_bottom.on(cc.Node.EventType.SIZE_CHANGED,this.onBottomNodeSizeChange,this);
+        }
+    },
+
+    setOuterScroll(outer_scroll){
+        this.outer_scroll = outer_scroll;
     },
 
     // start(){
@@ -84,6 +99,7 @@ cc.Class({
             node.y = begin_y;
             begin_y -= node.height;
         }
+        this.updateBottomNode();
     },
 
     toTop(){
@@ -120,6 +136,9 @@ cc.Class({
             }
         }
         this.initItems(begin_y , num);
+        this.showBottomNode();
+        this.updateBottomNode();
+        this.state_flag = PRE_CLEAR_OUT_BOUNDARY_FLAG;
         // this._calculateBoundary();
         this.is_init = false;
     },
@@ -141,6 +160,24 @@ cc.Class({
         }
         for(; i < this.item_list.length ; i++){
             this.item_list[i].active = false;
+        }
+    },
+
+    changeContentHeight(h){
+        if(this.node.height == h)return;
+        this.node.height = h;
+        this._view.height = h;
+        this.content.height = h;
+        this.state_flag = PRE_CLEAR_OUT_BOUNDARY_FLAG;
+    },
+
+    _quickAllayOuterBoundary(){
+        this._outOfBoundaryAmountDirty = true;
+        var offset = this._getHowMuchOutOfBoundary();
+        if(!offset.fuzzyEquals(cc.v2(0, 0), EPSILON)){
+            this.stopAutoScroll();
+            let newPosition = this.getContentPosition().add(offset);
+            this.setContentPosition(newPosition);
         }
     },
 
@@ -212,34 +249,56 @@ cc.Class({
         }
 
     },
-
     
+    _onTouchMoved (event, captureListeners) {
+        if (!this.enabledInHierarchy) return;
+        if (this._hasNestedViewGroup(event, captureListeners)) return;
+
+        let touch = event.touch;
+
+        //有外层scroll的话  滑动逻辑交给外层处理
+        if (this.content && !this.outer_scroll) {
+            this._handleMoveLogic(touch);
+        }
+        // Do not prevent touch events in inner nodes
+        if (!this.cancelInnerEvents) {
+            return;
+        }
+
+        let deltaMove = touch.getLocation().sub(touch.getStartLocation());
+        //FIXME: touch move delta should be calculated by DPI.
+        if (deltaMove.mag() > 7) {
+            if (!this._touchMoved && event.target !== this.node) {
+                // Simulate touch cancel for target node
+                let cancelEvent = new cc.Event.EventTouch(event.getTouches(), event.bubbles);
+                cancelEvent.type = cc.Node.EventType.TOUCH_CANCEL;
+                cancelEvent.touch = event.touch;
+                cancelEvent.simulate = true;
+                event.target.dispatchEvent(cancelEvent);
+                this._touchMoved = true;
+            }
+        }
+        this._stopPropagationIfTargetIsMe(event);
+    },
 
     _moveContent (deltaMove, canStartBounceBack) {
         let adjustedMove = this._flattenVectorByDirection(deltaMove);
+      
         let newPosition = this.getContentPosition().add(adjustedMove);
-
         this.setContentPosition(newPosition);
-   
+
         this._checkNeedRefresh(adjustedMove);
+        this.showBottomNode();
         this.updateLayouts(adjustedMove);
+
         let outOfBoundary = this._getHowMuchOutOfBoundary();
+        // cc.log(outOfBoundary.x , outOfBoundary.y)
         this._updateScrollBar(outOfBoundary);
         if (this.elastic && canStartBounceBack) {
             this._startBounceBackIfNeeded();
         }
     },
 
-    
-    // setContentPosition (position) {
-    //     if (position.fuzzyEquals(this.getContentPosition(), EPSILON)) {
-    //         return;
-    //     }
-    //     this.content.setPosition(position);
-    //     this._outOfBoundaryAmountDirty = true;
-      
-        
-    // },
 
     _checkNeedRefresh(offset){
         var len = this.index_arr.length;
@@ -289,7 +348,6 @@ cc.Class({
         }
     },
 
-
     _getContentTopBoundary () {
         if(this.index_arr.length > 0){
             if(this.begin_index == 0){
@@ -306,7 +364,11 @@ cc.Class({
     _getContentBottomBoundary () {
         if(this.index_arr.length > 0){
             var node = this.item_list[this.index_arr[this.index_arr.length - 1]];
-            var y = Math.min(this.content.y + node.y - node.height , this.content.y - this.content.height)
+            y = this.content.y + node.y - node.height;
+            if(this.bottom_is_show){
+                y -= this.node_bottom.height;
+            }
+            var y = Math.min(y , this.content.y - this.content.height);
             return y;
         }else{
             let contentPos = this.getContentPosition();
@@ -314,6 +376,17 @@ cc.Class({
         }
     },
 
+    is_top(){
+        if(this.data.length > 0 && this.begin_index != 0)return false;
+        return this._getContentTopBoundary() <= this._topBoundary;
+    },
+
+    is_bottom(){
+        if(this.data.length > 0 && this.end_index < this.data.length - 1)return false;
+        return this._getContentBottomBoundary() <= this._bottomBoundary;
+    },
+
+    //item中layoutpro逻辑
     addLayout(layout){
         this.layouts.push(layout);
     },
@@ -347,6 +420,37 @@ cc.Class({
             this.cache_pools[type].push(node);
         }
     },
+
+    //下面节点逻辑
+    showBottomNode(){
+    	if(!this.node_bottom)return;
+    	if(this.end_index == this.data.length - 1 && !this.bottom_is_show){
+    		this.bottom_is_show = true;
+    		var end_index = this.index_arr[this.index_arr.length - 1];
+    		var node_end = this.item_list[end_index];
+    		var y = node_end.y - node_end.height - this.node_bottom.height * (1-this.node_bottom.anchorY);
+            // this.bottom_is_show.parent = this.content;
+            this.node_bottom.x = 0;
+    		this.node_bottom.y = y;
+    	}else if(this.end_index < this.data.length - 1 && this.bottom_is_show){
+    		this.bottom_is_show = false;
+    		this.node_bottom.x = 1000;
+    	}
+    },
+    updateBottomNode(){
+    	if(!this.node_bottom)return;
+        if(!this.bottom_is_show)return;
+        var y = 0;
+        if(this.index_arr.length > 0){
+            var end_index = this.index_arr[this.index_arr.length - 1];
+            var node_end = this.item_list[end_index];
+            var y = node_end.y - node_end.height - this.node_bottom.height * (1-this.node_bottom.anchorY);
+        }
+		this.node_bottom.y = y;
+    },
+    onBottomNodeSizeChange(){
+    	this.updateBottomNode();
+    },
     // LIFE-CYCLE CALLBACKS:
 
     // onLoad () {},
@@ -363,5 +467,20 @@ cc.Class({
 
     // },
 
-    // update (dt) {},
+    _moveContentToTopLeft(viewSize){
+        cc.log("_moveContentToTopLeft");
+    },
+
+
+    update (dt) {
+        this._super(dt);
+        if(this.state_flag == DO_NO)return;
+        if(this.state_flag == PRE_CLEAR_OUT_BOUNDARY_FLAG){
+            this.state_flag = CLEAR_OUT_BOUNDARY_FLAG;
+        }else if(this.state_flag == CLEAR_OUT_BOUNDARY_FLAG){
+            // this._calculateBoundary();
+            this._quickAllayOuterBoundary();
+            this.state_flag = DO_NO;
+        }
+    },
 });
