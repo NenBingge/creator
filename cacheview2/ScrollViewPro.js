@@ -146,12 +146,17 @@ cc.Class({
     initItems(begin_y , num){
         this.index_arr = [];
         var i = 0;
+        let layout = null;
         for(; i < num ; i++){
             var node = this.getItem(i);
             var index = this.begin_index + i;
             node.active = true;
             node.y = begin_y;
             node.itemComponent.init(this.data[index] , index , this.p1);
+            layout = node.getComponent(cc.Layout)
+            if (layout) {
+                layout.updateLayout();
+            }
             if(this.auto_add_layout){
                 node.itemComponent.refreshLayout();
             }
@@ -287,9 +292,11 @@ cc.Class({
         let newPosition = this.getContentPosition().add(adjustedMove);
         this.setContentPosition(newPosition);
 
-        this._checkNeedRefresh(adjustedMove);
-        this.showBottomNode();
-        this.updateLayouts(adjustedMove);
+        if(!adjustedMove.fuzzyEquals(cc.v2(0, 0), EPSILON)){
+            this._checkNeedRefresh(adjustedMove);
+            this.showBottomNode();
+            this.updateLayouts(adjustedMove);
+        }
 
         let outOfBoundary = this._getHowMuchOutOfBoundary();
         // cc.log(outOfBoundary.x , outOfBoundary.y)
